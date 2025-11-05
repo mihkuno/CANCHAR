@@ -1,109 +1,107 @@
-#define RELAY_1 2
-#define RELAY_2 3
-#define METAL_1 4
-#define METAL_2 5
+#define RELAY 2
+#define BUZZER 3
+#define METAL 4
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C LCD_1(0x24, 16, 2);
-LiquidCrystal_I2C LCD_2(0x25, 16, 2);
+LiquidCrystal_I2C LCD(0x27, 20, 4);
 
-unsigned long metal1_endTime = 0;
-unsigned long metal2_endTime = 0;
-bool metal1_active = false;
-bool metal2_active = false;
-const unsigned long delayTime = 600000;  // 10 minutes (600,000 ms)
+unsigned long endTime = 0;                // millis() timestamp when session ends
+bool active = false;                      // true while timer > 0
+bool metal_detect = false;                // tracks sensor state to detect edges
+const unsigned long delayTime = 600000UL; // 10 minutes in milliseconds
 
 void setup() {
   Serial.begin(9600);
+  pinMode(METAL, INPUT);
+  pinMode(RELAY, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
 
-  pinMode(METAL_1, INPUT);
-  pinMode(METAL_2, INPUT);
-  pinMode(RELAY_1, OUTPUT);
-  pinMode(RELAY_2, OUTPUT);
-  digitalWrite(RELAY_1, HIGH);
-  digitalWrite(RELAY_2, HIGH);
+  digitalWrite(RELAY, HIGH); // relay inactive (HIGH)
+  digitalWrite(BUZZER, LOW);
 
-  LCD_1.init();
-  LCD_1.backlight();
-  LCD_1.setCursor(0, 0);
-  LCD_1.print("Metal Detector 1");
-
-  LCD_2.init();
-  LCD_2.backlight();
-  LCD_2.setCursor(0, 0);
-  LCD_2.print("Metal Detector 2");
+  LCD.init();
+  LCD.backlight();
+  LCD.setCursor(0,0);
+  LCD.print("Metal Detector");
+  LCD.setCursor(0,1);
+  LCD.print("Waiting...");
 }
 
 void loop() {
-  int metal_1 = !digitalRead(METAL_1);
-  int metal_2 = !digitalRead(METAL_2);
-  unsigned long currentMillis = millis();
+  int metal = !digitalRead(METAL); // adjust depending on sensor polarity
+  unsigned long now = millis();
 
-  Serial.println("Metal1: " + String(metal_1) + "\t\t" + "Metal2: " + String(metal_2));
+  // --- edge detection: no-metal -> metal : add time once per detection ---
+  if (!metal_detect && metal) {
+      metal_detect = true;
 
-  // Metal 1 Detection
-  if (metal_1) {
-    if (!metal1_active) {
-      digitalWrite(RELAY_1, LOW);
-      metal1_active = true;
-    }
-    metal1_endTime = max(metal1_endTime, currentMillis) + delayTime;
+      // beep beep
+      digitalWrite(BUZZER, HIGH);
+      delay(120);
+      digitalWrite(BUZZER, LOW);
+      delay(120);
+      digitalWrite(BUZZER, HIGH);
+      delay(120);
+      digitalWrite(BUZZER, LOW);
+
+      // If there is still remaining time, extend it; otherwise start from now
+      if (endTime > now) {
+        endTime += delayTime;    // add on top of existing remaining time
+      } else {
+        endTime = now + delayTime; // start fresh
+      }
+
+      digitalWrite(RELAY, LOW);
+      active = true;
   }
 
-  // Metal 2 Detection
-  if (metal_2) {
-    if (!metal2_active) {
-      digitalWrite(RELAY_2, LOW);
-      metal2_active = true;
-    }
-    metal2_endTime = max(metal2_endTime, currentMillis) + delayTime;
+
+  // when metal is removed, allow next detection to add again
+  if (metal_detect && !metal) {
+    metal_detect = false;
   }
 
-  // Timer display on LCD for Metal 1
-  if (metal1_active) {
-    unsigned long remainingTime = max(0, (metal1_endTime - currentMillis) / 1000);
-    LCD_1.setCursor(0, 1);
-    if (remainingTime >= 60) {
-      LCD_1.print("Time Left: ");
-      LCD_1.print(remainingTime / 60);
-      LCD_1.print(" min  ");
+  // --- timer / UI / buzzer ---
+  if (active) {
+    unsigned long remainingSec = (endTime > now) ? (endTime - now) / 1000 : 0;
+
+    // Display minutes if >= 60s, else seconds
+    LCD.setCursor(0,1);
+    if (remainingSec >= 60) {
+      unsigned long mins = remainingSec / 60;
+      unsigned long secs = remainingSec % 60;
+      LCD.print("Time Left: ");
+      LCD.print(mins);
+      LCD.print("m ");
+      if (secs < 10) LCD.print('0');
+      LCD.print(secs);
+      LCD.print("s   ");
     } else {
-      LCD_1.print("Time Left: ");
-      LCD_1.print(remainingTime);
-      LCD_1.print(" sec  ");
+      LCD.print("Time Left: ");
+      LCD.print(remainingSec);
+      LCD.print(" sec   ");
     }
 
-    if (currentMillis >= metal1_endTime) {
-      digitalWrite(RELAY_1, HIGH);
-      metal1_active = false;
-      LCD_1.setCursor(0, 1);
-      LCD_1.print("Waiting...     ");
-    }
-  }
-
-  // Timer display on LCD for Metal 2
-  if (metal2_active) {
-    unsigned long remainingTime = max(0, (metal2_endTime - currentMillis) / 1000);
-    LCD_2.setCursor(0, 1);
-    if (remainingTime >= 60) {
-      LCD_2.print("Time Left: ");
-      LCD_2.print(remainingTime / 60);
-      LCD_2.print(" min  ");
+    // Buzzer pattern only in the last 5 seconds: odd seconds = beep, even = silent
+    if (remainingSec <= 5 && remainingSec > 0) {
+      if (remainingSec % 2 == 1) digitalWrite(BUZZER, HIGH); // 5,3,1 -> beep
+      else                    digitalWrite(BUZZER, LOW);    // 4,2 -> silent
     } else {
-      LCD_2.print("Time Left: ");
-      LCD_2.print(remainingTime);
-      LCD_2.print(" sec  ");
+      digitalWrite(BUZZER, LOW);
     }
 
-    if (currentMillis >= metal2_endTime) {
-      digitalWrite(RELAY_2, HIGH);
-      metal2_active = false;
-      LCD_2.setCursor(0, 1);
-      LCD_2.print("Waiting...     ");
+    // finished
+    if (remainingSec == 0) {
+      active = false;
+      digitalWrite(RELAY, HIGH);
+      digitalWrite(BUZZER, LOW);
+      LCD.setCursor(0,1);
+      LCD.print("Waiting...       ");
+      Serial.println("Session ended.");
     }
   }
 
-  delay(300); // Smooth LCD updates
+  delay(200); // smooth updates
 }
